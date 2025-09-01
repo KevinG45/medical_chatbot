@@ -158,15 +158,48 @@ class PractoDoctorsSpider(scrapy.Spider):
             item['speciality'] = speciality
             item['profile_url'] = response.url
             
-            # Name
-            name_element = await page.query_selector('h1.c-profile__title')
-            if name_element:
-                item['name'] = await name_element.inner_text()
+            # Name - try multiple selectors
+            name_selectors = [
+                'h1.c-profile__title',  # Original selector
+                'h1[class*="title"]',  # Any h1 with title in class
+                '.doctor-name',  # Direct naming
+                '.profile-name',  # Profile name
+                'h1[class*="name"]',  # H1 with name in class
+                '.physician-name',  # Physician name
+                'h2[class*="title"]',  # H2 with title
+                '.doc-name',  # Doc name
+            ]
             
-            # Degree
-            degree_element = await page.query_selector('p.c-profile__details')
-            if degree_element:
-                item['degree'] = await degree_element.inner_text()
+            for selector in name_selectors:
+                try:
+                    name_element = await page.query_selector(selector)
+                    if name_element:
+                        item['name'] = await name_element.inner_text()
+                        break
+                except Exception:
+                    continue
+            
+            # Degree - try multiple selectors
+            degree_selectors = [
+                'p.c-profile__details',  # Original selector
+                '.doctor-degree',  # Direct naming
+                '.profile-degree',  # Profile degree
+                'p[class*="degree"]',  # Paragraph with degree
+                '.qualification',  # Qualification
+                '.doctor-qualification',  # Doctor qualification
+                'span[class*="degree"]',  # Span with degree
+                '.credentials',  # Credentials
+                '.education',  # Education
+            ]
+            
+            for selector in degree_selectors:
+                try:
+                    degree_element = await page.query_selector(selector)
+                    if degree_element:
+                        item['degree'] = await degree_element.inner_text()
+                        break
+                except Exception:
+                    continue
             
             # Years of experience - try multiple selectors
             experience_text = None
@@ -180,7 +213,17 @@ class PractoDoctorsSpider(scrapy.Spider):
                 '.profile-details .experience',  # Common pattern
                 '.doctor-experience',  # Direct naming
                 'h2:contains("years")',  # Header with years
-                'div[data-qa*="experience"]'  # Data attribute
+                'div[data-qa*="experience"]',  # Data attribute
+                '.experience-text',  # Experience text
+                '.years-experience',  # Years experience
+                '.work-experience',  # Work experience
+                'span[class*="year"]',  # Span with year in class
+                'div[class*="experience"]',  # Div with experience in class
+                '.profile-experience',  # Profile experience
+                '.doctor-years',  # Doctor years
+                'p:contains("years of experience")',  # Paragraph with full text
+                'span:contains("experience")',  # Span with experience
+                '.experience-value',  # Experience value
             ]
             
             def is_valid_experience_text(text):
@@ -261,6 +304,15 @@ class PractoDoctorsSpider(scrapy.Spider):
                 '.clinic-address',  # Clinic address
                 'span[class*="location"]:not([class*="html"])',  # Specific location spans, excluding HTML elements
                 'div[class*="address"]:not([class*="html"])',  # Specific address divs, excluding HTML elements
+                '.address-line',  # Address line
+                '.clinic-info .address',  # Clinic info address
+                '.practice-address',  # Practice address
+                '.location-text',  # Location text
+                'p[class*="address"]',  # Paragraph with address
+                'span[class*="address"]',  # Span with address
+                '.area-name',  # Area name
+                '.locality',  # Locality
+                '.address-details',  # Address details
             ]
             
             def is_valid_location(text):
