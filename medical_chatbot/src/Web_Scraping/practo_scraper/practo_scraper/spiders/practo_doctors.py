@@ -158,15 +158,48 @@ class PractoDoctorsSpider(scrapy.Spider):
             item['speciality'] = speciality
             item['profile_url'] = response.url
             
-            # Name
-            name_element = await page.query_selector('h1.c-profile__title')
-            if name_element:
-                item['name'] = await name_element.inner_text()
+            # Name - try multiple selectors
+            name_selectors = [
+                'h1.c-profile__title',  # Original selector
+                'h1[class*="title"]',  # Any h1 with title in class
+                '.doctor-name',  # Direct naming
+                '.profile-name',  # Profile name
+                'h1[class*="name"]',  # H1 with name in class
+                '.physician-name',  # Physician name
+                'h2[class*="title"]',  # H2 with title
+                '.doc-name',  # Doc name
+            ]
             
-            # Degree
-            degree_element = await page.query_selector('p.c-profile__details')
-            if degree_element:
-                item['degree'] = await degree_element.inner_text()
+            for selector in name_selectors:
+                try:
+                    name_element = await page.query_selector(selector)
+                    if name_element:
+                        item['name'] = await name_element.inner_text()
+                        break
+                except Exception:
+                    continue
+            
+            # Degree - try multiple selectors
+            degree_selectors = [
+                'p.c-profile__details',  # Original selector
+                '.doctor-degree',  # Direct naming
+                '.profile-degree',  # Profile degree
+                'p[class*="degree"]',  # Paragraph with degree
+                '.qualification',  # Qualification
+                '.doctor-qualification',  # Doctor qualification
+                'span[class*="degree"]',  # Span with degree
+                '.credentials',  # Credentials
+                '.education',  # Education
+            ]
+            
+            for selector in degree_selectors:
+                try:
+                    degree_element = await page.query_selector(selector)
+                    if degree_element:
+                        item['degree'] = await degree_element.inner_text()
+                        break
+                except Exception:
+                    continue
             
             # Years of experience - try multiple selectors
             experience_text = None
@@ -180,8 +213,52 @@ class PractoDoctorsSpider(scrapy.Spider):
                 '.profile-details .experience',  # Common pattern
                 '.doctor-experience',  # Direct naming
                 'h2:contains("years")',  # Header with years
-                'div[data-qa*="experience"]'  # Data attribute
+                'div[data-qa*="experience"]',  # Data attribute
+                '.experience-text',  # Experience text
+                '.years-experience',  # Years experience
+                '.work-experience',  # Work experience
+                'span[class*="year"]',  # Span with year in class
+                'div[class*="experience"]',  # Div with experience in class
+                '.profile-experience',  # Profile experience
+                '.doctor-years',  # Doctor years
+                'p:contains("years of experience")',  # Paragraph with full text
+                'span:contains("experience")',  # Span with experience
+                '.experience-value',  # Experience value
             ]
+            
+            def is_valid_experience_text(text):
+                """Check if text represents years of experience rather than graduation year"""
+                if not text:
+                    return False
+                
+                import re
+                # Look for patterns like "5 years", "10+ years", "15 years of experience"
+                experience_patterns = [
+                    r'(\d{1,2})\+?\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)',
+                    r'(\d{1,2})\+?\s*(?:years?|yrs?)',
+                    r'experience:?\s*(\d{1,2})\+?\s*(?:years?|yrs?)',
+                ]
+                
+                for pattern in experience_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        years = int(match.group(1))
+                        # Validate reasonable experience range (1-50 years)
+                        if 1 <= years <= 50:
+                            return True
+                
+                # Avoid graduation years (1990-2030)
+                graduation_patterns = [
+                    r'(?:graduated|degree|mbbs|md|bds|phd)\s*(?:in)?\s*(19\d{2}|20[0-3]\d)',
+                    r'(19\d{2}|20[0-3]\d)\s*(?:graduate|degree)',
+                    r'^(19\d{2}|20[0-3]\d)$',  # Just a year that looks like graduation year
+                ]
+                
+                for pattern in graduation_patterns:
+                    if re.search(pattern, text, re.IGNORECASE):
+                        return False
+                
+                return False
             
             for selector in experience_selectors:
                 try:
@@ -191,7 +268,7 @@ class PractoDoctorsSpider(scrapy.Spider):
                         for elem in elements:
                             text = await elem.inner_text() if elem else ""
                             if text and ("years" in text.lower() or "experience" in text.lower()):
-                                if any(char.isdigit() for char in text):
+                                if is_valid_experience_text(text):
                                     experience_text = text
                                     break
                         if experience_text:
@@ -202,8 +279,9 @@ class PractoDoctorsSpider(scrapy.Spider):
                             for elem in elements:
                                 text = await elem.inner_text() if elem else ""
                                 if text and ("years" in text.lower() or "experience" in text.lower()):
-                                    experience_text = text
-                                    break
+                                    if is_valid_experience_text(text):
+                                        experience_text = text
+                                        break
                             if experience_text:
                                 break
                 except Exception:
@@ -226,6 +304,15 @@ class PractoDoctorsSpider(scrapy.Spider):
                 '.clinic-address',  # Clinic address
                 'span[class*="location"]:not([class*="html"])',  # Specific location spans, excluding HTML elements
                 'div[class*="address"]:not([class*="html"])',  # Specific address divs, excluding HTML elements
+                '.address-line',  # Address line
+                '.clinic-info .address',  # Clinic info address
+                '.practice-address',  # Practice address
+                '.location-text',  # Location text
+                'p[class*="address"]',  # Paragraph with address
+                'span[class*="address"]',  # Span with address
+                '.area-name',  # Area name
+                '.locality',  # Locality
+                '.address-details',  # Address details
             ]
             
             def is_valid_location(text):
@@ -375,21 +462,61 @@ class PractoDoctorsSpider(scrapy.Spider):
             
             item['npv'] = votes_text or "0"
             
-            # Consultation fee
-            fee_element = await page.query_selector('span.u-strike')
-            if fee_element:
-                item['consultation_fee'] = await fee_element.inner_text()
-            else:
-                # Try alternative selector
-                fee_element = await page.query_selector('div.u-f-right.u-large-font.u-bold.u-valign--middle.u-lheight-normal')
-                if fee_element:
-                    item['consultation_fee'] = await fee_element.inner_text()
+            # Consultation fee - try multiple selectors
+            fee_text = None
+            fee_selectors = [
+                'span.u-strike',  # Original selector
+                'div.u-f-right.u-large-font.u-bold.u-valign--middle.u-lheight-normal',  # Original alternative
+                '*[class*="fee"]',  # Any element with "fee" in class
+                '*[class*="price"]',  # Any element with "price" in class
+                '*[class*="cost"]',  # Any element with "cost" in class
+                '*[class*="consultation"]',  # Any element with "consultation" in class
+                '.consultation-fee',  # Common pattern
+                '.doctor-fee',  # Direct naming
+                '.fee-amount',  # Fee amount
+                'span[data-qa*="fee"]',  # Data attribute for fee
+                'div[data-qa*="price"]',  # Data attribute for price
+                'span:contains("₹")',  # Text-based search for rupee symbol
+                'div:contains("₹")',  # Div with rupee symbol
+                '.price-display',  # Price display
+                '.consultation-price',  # Consultation price
+            ]
             
-            # Only yield if we have essential data
-            if item.get('name') and item.get('consultation_fee'):
+            for selector in fee_selectors:
+                try:
+                    if 'contains' in selector:
+                        # For text-based selectors, use different approach
+                        elements = await page.query_selector_all('*')
+                        for elem in elements:
+                            text = await elem.inner_text() if elem else ""
+                            if text and ("₹" in text or "rs" in text.lower()):
+                                # Check if it's likely a fee (contains currency and numbers)
+                                import re
+                                if re.search(r'[₹$]\s*\d+|rs\s*\d+|\d+\s*[₹$]', text, re.IGNORECASE):
+                                    fee_text = text
+                                    break
+                        if fee_text:
+                            break
+                    else:
+                        element = await page.query_selector(selector)
+                        if element:
+                            text = await element.inner_text()
+                            if text and text.strip():
+                                # Validate that this looks like a fee
+                                import re
+                                if re.search(r'[₹$]\s*\d+|rs\s*\d+|\d+\s*[₹$]|\d+', text, re.IGNORECASE):
+                                    fee_text = text.strip()
+                                    break
+                except Exception:
+                    continue
+            
+            item['consultation_fee'] = fee_text or ""
+            
+            # Only yield if we have essential data (name is the minimum requirement)
+            if item.get('name'):
                 yield item
             else:
-                self.logger.warning(f"Skipping incomplete profile: {response.url}")
+                self.logger.warning(f"Skipping profile without name: {response.url}")
                 
         except Exception as e:
             self.logger.error(f"Error parsing doctor profile {response.url}: {str(e)}")
