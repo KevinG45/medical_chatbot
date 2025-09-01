@@ -5,6 +5,7 @@
 
 # useful for handling different item types with a single interface
 from itemadapter import ItemAdapter
+from scrapy.exceptions import DropItem
 import re
 import pandas as pd
 import os
@@ -22,15 +23,17 @@ class ValidationPipeline:
         if not adapter.get('name'):
             raise DropItem(f"Missing name in {item}")
             
-        # Skip if consultation fee is missing
-        if not adapter.get('consultation_fee'):
-            raise DropItem(f"Missing consultation fee in {item}")
+        # Note: consultation_fee is no longer required since it may not always be available
+        # We'll let the cleaning pipeline handle missing fees by setting them to 0
             
         return item
 
 
 class CleaningPipeline:
     """Pipeline to clean and normalize scraped data"""
+    
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
     
     def process_item(self, item, spider):
         adapter = ItemAdapter(item)
@@ -115,18 +118,40 @@ class CleaningPipeline:
         if not experience_text:
             return 0
         
-        # Look for patterns like "5 years", "10+ years", etc.
-        pattern = r'(\d+)(?:\+)?\s*(?:years?|yrs?)'
-        match = re.search(pattern, str(experience_text), re.IGNORECASE)
+        # Look for patterns like "5 years", "10+ years", "15 years of experience"
+        experience_patterns = [
+            r'(\d{1,2})\+?\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)',
+            r'experience:?\s*(\d{1,2})\+?\s*(?:years?|yrs?)',
+            r'(\d{1,2})\+?\s*(?:years?|yrs?)',
+        ]
         
-        if match:
-            return int(match.group(1))
+        for pattern in experience_patterns:
+            match = re.search(pattern, str(experience_text), re.IGNORECASE)
+            if match:
+                years = int(match.group(1))
+                # Validate reasonable experience range (1-50 years)
+                if 1 <= years <= 50:
+                    return years
         
-        # Look for just numbers
+        # Avoid graduation years (1990-2030) 
+        graduation_patterns = [
+            r'(?:graduated|degree|mbbs|md|bds|phd)\s*(?:in)?\s*(19\d{2}|20[0-3]\d)',
+            r'(19\d{2}|20[0-3]\d)\s*(?:graduate|degree)',
+            r'^(19\d{2}|20[0-3]\d)$',  # Just a year that looks like graduation year
+        ]
+        
+        for pattern in graduation_patterns:
+            if re.search(pattern, str(experience_text), re.IGNORECASE):
+                return 0  # Don't extract graduation years as experience
+        
+        # Look for just numbers as last resort, but validate range
         pattern = r'(\d+)'
         match = re.search(pattern, str(experience_text))
         if match:
-            return int(match.group(1))
+            years = int(match.group(1))
+            # Only accept if it looks like reasonable experience years (not graduation year)
+            if 1 <= years <= 50:
+                return years
         
         return 0
     
@@ -167,14 +192,44 @@ class CleaningPipeline:
             return 0
         
         # Remove currency symbols and extract number
-        # Handle patterns like "₹500", "500", "₹1,000", etc.
-        cleaned = re.sub(r'[₹$,\s]', '', str(fee_text))
+        # Handle patterns like "₹500", "500", "₹1,000", "Rs 500", "FREE", etc.
+        fee_str = str(fee_text).strip()
         
+        # Handle special cases
+        if re.search(r'\b(free|no\s*charge|complimentary)\b', fee_str, re.IGNORECASE):
+            return 0
+        
+        # Check if it has currency symbols (more likely to be a fee)
+        has_currency = re.search(r'[₹$]|rs\b', fee_str, re.IGNORECASE)
+        
+        # Remove currency symbols, commas, and spaces
+        cleaned = re.sub(r'[₹$rs,\s]', '', fee_str, flags=re.IGNORECASE)
+        
+        # Look for numbers
         pattern = r'(\d+)'
         match = re.search(pattern, cleaned)
         
         if match:
-            return int(match.group(1))
+            fee = int(match.group(1))
+            
+            # If it has currency symbols, be more lenient with range
+            if has_currency:
+                if 0 <= fee <= 10000:
+                    return fee
+                else:
+                    self.logger.warning(f"Unusually high fee extracted: {fee} from text: {fee_text}")
+                    return 0
+            else:
+                # If no currency symbols, be more strict (likely experience years or other numbers)
+                # Only accept as fee if it's in a reasonable range for consultation fees
+                if 100 <= fee <= 5000:
+                    return fee
+                elif 50 <= fee < 100:
+                    # Could be a low fee, but be cautious
+                    return fee
+                else:
+                    # Too low or too high without currency symbol, probably not a fee
+                    return 0
         
         return 0
     
