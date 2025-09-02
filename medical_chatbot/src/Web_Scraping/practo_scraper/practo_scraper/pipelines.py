@@ -271,15 +271,34 @@ class CleaningPipeline:
         if not map_link:
             return city or "Location Unknown"
         
-        # Extract coordinates from map link
-        coord_pattern = r'maps/place/(-?\d+\.?\d*),(-?\d+\.?\d*)'
-        match = re.search(coord_pattern, str(map_link))
-        if match:
+        # Extract coordinates from various map link formats
+        coord_patterns = [
+            r'maps/place/(-?\d+\.?\d*),(-?\d+\.?\d*)',  # Original pattern
+            r'maps\?q=(-?\d+\.?\d*),(-?\d+\.?\d*)',      # Query format
+            r'dir//(-?\d+\.?\d*),(-?\d+\.?\d*)',         # Direction format
+            r'place/(-?\d+\.?\d*),(-?\d+\.?\d*)'         # Place format
+        ]
+        
+        for pattern in coord_patterns:
+            match = re.search(pattern, str(map_link))
+            if match:
+                try:
+                    lat, lng = float(match.group(1)), float(match.group(2))
+                    # Basic validation for coordinates
+                    if -90 <= lat <= 90 and -180 <= lng <= 180:
+                        return f"{city} ({lat:.3f}, {lng:.3f})"
+                except ValueError:
+                    continue
+        
+        # If it's a search URL, try to extract the search term
+        search_pattern = r'maps/search/([^&?]+)'
+        search_match = re.search(search_pattern, str(map_link))
+        if search_match:
             try:
-                lat, lng = float(match.group(1)), float(match.group(2))
-                # For now, just return city with coordinates info
-                return f"{city} ({lat:.3f}, {lng:.3f})"
-            except ValueError:
+                from urllib.parse import unquote_plus
+                search_term = unquote_plus(search_match.group(1))
+                return search_term
+            except:
                 pass
         
         # If extraction fails, fall back to city

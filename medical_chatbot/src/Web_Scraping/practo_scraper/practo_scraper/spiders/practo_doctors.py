@@ -1,6 +1,6 @@
 import scrapy
 from scrapy_playwright.page import PageMethod
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote_plus
 import time
 import re
 from practo_scraper.items import DoctorItem
@@ -312,10 +312,10 @@ class PractoDoctorsSpider(scrapy.Spider):
                 except Exception:
                     continue
             
-            # If no direct map link found, try to find any element that might contain location data
+            # If no direct map link found, try enhanced strategies
             if not google_map_link:
                 try:
-                    # Look for elements that might have onclick events or data attributes with coordinates
+                    # Strategy 1: Look for elements with coordinates in data attributes
                     map_elements = await page.query_selector_all('*[onclick*="map"], *[data-lat], *[data-lng], *[data-coordinates]')
                     for elem in map_elements:
                         onclick = await elem.get_attribute('onclick') or ""
@@ -328,6 +328,103 @@ class PractoDoctorsSpider(scrapy.Spider):
                         elif data_lat and data_lng:
                             google_map_link = f"https://www.google.com/maps?q={data_lat},{data_lng}"
                             break
+                except Exception:
+                    pass
+            
+            # Strategy 2: Extract coordinates from page source/JavaScript
+            if not google_map_link:
+                try:
+                    page_content = await page.content()
+                    # Look for coordinate patterns in the page source
+                    import re
+                    coord_patterns = [
+                        r'[\"\']?lat[\"\']?\s*[:=]\s*[\"\']*(-?\d+\.?\d*)[\"\']*.*?[\"\']?lng[\"\']?\s*[:=]\s*[\"\']*(-?\d+\.?\d*)[\"\']*',
+                        r'[\"\']?latitude[\"\']?\s*[:=]\s*[\"\']*(-?\d+\.?\d*)[\"\']*.*?[\"\']?longitude[\"\']?\s*[:=]\s*[\"\']*(-?\d+\.?\d*)[\"\']*',
+                        r'google\.maps.*?(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)',
+                        r'maps\.google.*?(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)',
+                        r'LatLng\(\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\)'
+                    ]
+                    
+                    for pattern in coord_patterns:
+                        matches = re.finditer(pattern, page_content, re.IGNORECASE)
+                        for match in matches:
+                            try:
+                                lat, lng = float(match.group(1)), float(match.group(2))
+                                # Basic validation for Indian coordinates
+                                if 6 <= lat <= 37 and 68 <= lng <= 98:  # India bounds
+                                    google_map_link = f"https://www.google.com/maps?q={lat},{lng}"
+                                    break
+                            except (ValueError, IndexError):
+                                continue
+                        if google_map_link:
+                            break
+                except Exception:
+                    pass
+            
+            # Strategy 3: Look for button elements that might trigger map display
+            if not google_map_link:
+                try:
+                    map_buttons = await page.query_selector_all('button, a, div')
+                    for button in map_buttons[:20]:  # Limit to avoid too many checks
+                        button_text = await button.inner_text() if button else ""
+                        button_class = await button.get_attribute('class') or ""
+                        button_id = await button.get_attribute('id') or ""
+                        onclick = await button.get_attribute('onclick') or ""
+                        
+                        if any(keyword in (button_text + button_class + button_id + onclick).lower() 
+                               for keyword in ['direction', 'location', 'map', 'navigate']):
+                            # Check for data attributes on this element
+                            for attr in ['data-lat', 'data-lng', 'data-latitude', 'data-longitude']:
+                                coord = await button.get_attribute(attr)
+                                if coord:
+                                    try:
+                                        coord_val = float(coord)
+                                        if attr in ['data-lat', 'data-latitude']:
+                                            lat = coord_val
+                                            lng_attr = 'data-lng' if 'data-lat' in attr else 'data-longitude'
+                                            lng_val = await button.get_attribute(lng_attr)
+                                            if lng_val:
+                                                lng = float(lng_val)
+                                                if 6 <= lat <= 37 and 68 <= lng <= 98:
+                                                    google_map_link = f"https://www.google.com/maps?q={lat},{lng}"
+                                                    break
+                                    except ValueError:
+                                        continue
+                        if google_map_link:
+                            break
+                except Exception:
+                    pass
+            
+            # Strategy 4: Generate map link from location text when available
+            if not google_map_link and location_text and location_text.strip():
+                try:
+                    # Clean location text for search
+                    clean_location = location_text.strip()
+                    # Remove common unwanted parts
+                    clean_location = re.sub(r':\s*Practo$', '', clean_location)
+                    clean_location = re.sub(r'^[^,]+,\s*', '', clean_location)  # Remove clinic name if present
+                    
+                    if clean_location and len(clean_location) > 3:
+                        # Add city if not already present
+                        city_name = response.meta.get('city', '')
+                        if city_name and city_name.lower() not in clean_location.lower():
+                            clean_location = f"{clean_location}, {city_name}"
+                        
+                        # Create Google Maps search URL
+                        from urllib.parse import quote_plus
+                        encoded_location = quote_plus(clean_location)
+                        google_map_link = f"https://www.google.com/maps/search/{encoded_location}"
+                except Exception:
+                    pass
+            
+            # Strategy 5: Last resort - use city name if available
+            if not google_map_link:
+                try:
+                    city_name = response.meta.get('city', '')
+                    if city_name:
+                        from urllib.parse import quote_plus
+                        encoded_city = quote_plus(city_name)
+                        google_map_link = f"https://www.google.com/maps/search/{encoded_city}"
                 except Exception:
                     pass
             
