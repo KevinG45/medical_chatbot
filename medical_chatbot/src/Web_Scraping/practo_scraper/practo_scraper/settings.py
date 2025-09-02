@@ -74,6 +74,7 @@ PLAYWRIGHT_LAUNCH_OPTIONS = {
 # Configure item pipelines
 # See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
 ITEM_PIPELINES = {
+    "practo_scraper.pipelines.DuplicateFilterPipeline": 200,
     "practo_scraper.pipelines.ValidationPipeline": 300,
     "practo_scraper.pipelines.CleaningPipeline": 400,
     "practo_scraper.pipelines.CsvExportPipeline": 500,
