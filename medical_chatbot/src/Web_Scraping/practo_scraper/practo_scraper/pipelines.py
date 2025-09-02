@@ -5,11 +5,37 @@
 
 # useful for handling different item types with a single interface
 from itemadapter import ItemAdapter
+from scrapy.exceptions import DropItem
 import re
 import pandas as pd
 import os
 from datetime import datetime
 import logging
+
+
+class DeduplicationPipeline:
+    """Pipeline to remove duplicate doctors based on name and city combination"""
+    
+    def __init__(self):
+        self.seen_doctors = set()
+    
+    def process_item(self, item, spider):
+        adapter = ItemAdapter(item)
+        
+        # Create a unique key based on name and city (case-insensitive)
+        name = adapter.get('name', '').strip().lower()
+        city = adapter.get('city', '').strip().lower()
+        
+        if not name:
+            raise DropItem(f"Missing name for deduplication: {item}")
+        
+        doctor_key = f"{name}_{city}"
+        
+        if doctor_key in self.seen_doctors:
+            raise DropItem(f"Duplicate doctor found: {adapter.get('name')} in {adapter.get('city')}")
+        
+        self.seen_doctors.add(doctor_key)
+        return item
 
 
 class ValidationPipeline:
@@ -22,9 +48,10 @@ class ValidationPipeline:
         if not adapter.get('name'):
             raise DropItem(f"Missing name in {item}")
             
-        # Skip if consultation fee is missing
+        # More lenient validation - don't drop if consultation fee is missing,
+        # just set it to 0 to be cleaned later
         if not adapter.get('consultation_fee'):
-            raise DropItem(f"Missing consultation fee in {item}")
+            adapter['consultation_fee'] = 0
             
         return item
 
@@ -115,18 +142,44 @@ class CleaningPipeline:
         if not experience_text:
             return 0
         
-        # Look for patterns like "5 years", "10+ years", etc.
-        pattern = r'(\d+)(?:\+)?\s*(?:years?|yrs?)'
-        match = re.search(pattern, str(experience_text), re.IGNORECASE)
+        experience_text = str(experience_text).strip()
         
-        if match:
-            return int(match.group(1))
+        # First, look for explicit experience patterns like "5 years", "10+ years", "15 years of experience"
+        experience_patterns = [
+            r'(\d+)(?:\+)?\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)',
+            r'(\d+)(?:\+)?\s*(?:years?|yrs?)\s*experience',
+            r'experience[:\s]*(\d+)(?:\+)?\s*(?:years?|yrs?)',
+            r'(\d+)(?:\+)?\s*(?:years?|yrs?)'
+        ]
         
-        # Look for just numbers
-        pattern = r'(\d+)'
-        match = re.search(pattern, str(experience_text))
-        if match:
-            return int(match.group(1))
+        for pattern in experience_patterns:
+            match = re.search(pattern, experience_text, re.IGNORECASE)
+            if match:
+                years = int(match.group(1))
+                # Sanity check: experience should be reasonable (0-60 years)
+                if 0 <= years <= 60:
+                    return years
+        
+        # Check if it's a graduation year (4-digit year)
+        year_pattern = r'\b(19|20)\d{2}\b'
+        year_match = re.search(year_pattern, experience_text)
+        if year_match:
+            grad_year = int(year_match.group())
+            current_year = datetime.now().year
+            # Calculate experience from graduation year
+            experience = current_year - grad_year
+            # Sanity check: experience should be reasonable
+            if 0 <= experience <= 60:
+                return experience
+        
+        # Look for just numbers (but be more careful)
+        number_pattern = r'\b(\d+)\b'
+        matches = re.findall(number_pattern, experience_text)
+        for match in matches:
+            num = int(match)
+            # If it's a reasonable experience number (not a year)
+            if 0 <= num <= 60:
+                return num
         
         return 0
     
@@ -247,6 +300,16 @@ class CsvExportPipeline:
             
             # Convert to DataFrame
             df = pd.DataFrame(self.items)
+            
+            # Ensure correct column order to match expected format
+            expected_columns = ['city', 'speciality', 'profile_url', 'name', 'degree', 
+                              'year_of_experience', 'location', 'dp_score', 'npv', 
+                              'consultation_fee', 'google_map_link']
+            
+            # Reorder columns if they exist
+            available_columns = [col for col in expected_columns if col in df.columns]
+            if available_columns:
+                df = df[available_columns]
             
             # Generate filename with timestamp
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

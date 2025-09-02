@@ -74,6 +74,7 @@ PLAYWRIGHT_LAUNCH_OPTIONS = {
 # Configure item pipelines
 # See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
 ITEM_PIPELINES = {
+    "practo_scraper.pipelines.DeduplicationPipeline": 250,  # First, remove duplicates
     "practo_scraper.pipelines.ValidationPipeline": 300,
     "practo_scraper.pipelines.CleaningPipeline": 400,
     "practo_scraper.pipelines.CsvExportPipeline": 500,
@@ -116,7 +117,7 @@ FEEDS = {
         "format": "csv",
         "encoding": "utf8",
         "store_empty": False,
-        "fields": ["name", "speciality", "degree", "year_of_experience", "location", "city", "dp_score", "npv", "consultation_fee", "profile_url", "scraped_at", "google_map_link"],
+        "fields": ["city", "speciality", "profile_url", "name", "degree", "year_of_experience", "location", "dp_score", "npv", "consultation_fee", "google_map_link"],
     },
 }
 

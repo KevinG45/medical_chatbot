@@ -226,6 +226,17 @@ class PractoDoctorsSpider(scrapy.Spider):
                 '.clinic-address',  # Clinic address
                 'span[class*="location"]:not([class*="html"])',  # Specific location spans, excluding HTML elements
                 'div[class*="address"]:not([class*="html"])',  # Specific address divs, excluding HTML elements
+                '.clinic-info .location',  # Clinic info location
+                '.doctor-info .address',  # Doctor info address
+                '.practice-info .location',  # Practice info location
+                '*[class*="area"]',  # Any element with area in class
+                '*[class*="locality"]',  # Any element with locality in class
+                '.clinic-details .area',  # Clinic details area
+                '.contact-info .location',  # Contact info location
+                '.profile-clinic-location',  # Profile clinic location
+                'p:contains("Bangalore")',  # Text-based search for Bangalore
+                'span:contains("Bangalore")',  # Span with Bangalore
+                'div:contains("Bangalore")'  # Div with Bangalore
             ]
             
             def is_valid_location(text):
@@ -262,15 +273,28 @@ class PractoDoctorsSpider(scrapy.Spider):
             
             for selector in location_selectors:
                 try:
-                    element = await page.query_selector(selector)
-                    if element:
-                        text = await element.inner_text()
-                        if is_valid_location(text):
-                            location_text = text.strip()
-                            self.logger.debug(f"Found valid location with selector '{selector}': {location_text}")
+                    if 'contains' in selector:
+                        # For text-based selectors, search through elements
+                        elements = await page.query_selector_all('p, span, div')
+                        for elem in elements:
+                            text = await elem.inner_text() if elem else ""
+                            if text and "bangalore" in text.lower():
+                                if is_valid_location(text):
+                                    location_text = text.strip()
+                                    self.logger.debug(f"Found valid location with text search: {location_text}")
+                                    break
+                        if location_text:
                             break
-                        else:
-                            self.logger.debug(f"Invalid location found with selector '{selector}': {text}")
+                    else:
+                        element = await page.query_selector(selector)
+                        if element:
+                            text = await element.inner_text()
+                            if is_valid_location(text):
+                                location_text = text.strip()
+                                self.logger.debug(f"Found valid location with selector '{selector}': {location_text}")
+                                break
+                            else:
+                                self.logger.debug(f"Invalid location found with selector '{selector}': {text}")
                 except Exception as e:
                     self.logger.debug(f"Error with location selector '{selector}': {e}")
                     continue
@@ -375,21 +399,57 @@ class PractoDoctorsSpider(scrapy.Spider):
             
             item['npv'] = votes_text or "0"
             
-            # Consultation fee
-            fee_element = await page.query_selector('span.u-strike')
-            if fee_element:
-                item['consultation_fee'] = await fee_element.inner_text()
-            else:
-                # Try alternative selector
-                fee_element = await page.query_selector('div.u-f-right.u-large-font.u-bold.u-valign--middle.u-lheight-normal')
-                if fee_element:
-                    item['consultation_fee'] = await fee_element.inner_text()
+            # Consultation fee - try multiple selectors
+            fee_text = None
+            fee_selectors = [
+                'span.u-strike',  # Original selector
+                'div.u-f-right.u-large-font.u-bold.u-valign--middle.u-lheight-normal',  # Alternative selector
+                '*[class*="fee"]',  # Any element with fee in class
+                '*[class*="price"]',  # Any element with price in class
+                '*[class*="cost"]',  # Any element with cost in class
+                '*[class*="amount"]',  # Any element with amount in class
+                '.consultation-fee',  # Common pattern
+                '.doctor-fee',  # Direct naming
+                '.price-info',  # Price pattern
+                '.fee-amount',  # Fee pattern
+                '*:contains("₹")',  # Text-based search for rupee symbol
+                '*:contains("consultation")',  # Text with consultation
+                '.fee-text',  # Fee text pattern
+                '[data-qa*="fee"]',  # Data attribute
+                '.pricing-info'  # Pricing pattern
+            ]
             
-            # Only yield if we have essential data
-            if item.get('name') and item.get('consultation_fee'):
+            for selector in fee_selectors:
+                try:
+                    if 'contains' in selector:
+                        # For text-based selectors, search through elements
+                        elements = await page.query_selector_all('span, div, p')
+                        for elem in elements:
+                            text = await elem.inner_text() if elem else ""
+                            if text and ("₹" in text or "consultation" in text.lower()):
+                                # Look for numbers in the text
+                                if any(char.isdigit() for char in text):
+                                    fee_text = text.strip()
+                                    break
+                        if fee_text:
+                            break
+                    else:
+                        element = await page.query_selector(selector)
+                        if element:
+                            text = await element.inner_text()
+                            if text and text.strip():
+                                fee_text = text.strip()
+                                break
+                except Exception:
+                    continue
+                    
+            item['consultation_fee'] = fee_text or "0"
+            
+            # Only yield if we have essential data (name is mandatory)
+            if item.get('name'):
                 yield item
             else:
-                self.logger.warning(f"Skipping incomplete profile: {response.url}")
+                self.logger.warning(f"Skipping profile without name: {response.url}")
                 
         except Exception as e:
             self.logger.error(f"Error parsing doctor profile {response.url}: {str(e)}")
