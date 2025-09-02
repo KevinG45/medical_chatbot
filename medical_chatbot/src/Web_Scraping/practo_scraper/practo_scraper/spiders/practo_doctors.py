@@ -501,3 +501,243 @@ class PractoDoctorsSpider(scrapy.Spider):
     def closed(self, reason):
         """Called when spider is closed"""
         self.logger.info(f"Spider closed: {reason}")
+
+
+class PractoDoctorsSimpleSpider(scrapy.Spider):
+    """Simple HTTP-based spider for Practo doctors (no Playwright)"""
+    name = "practo_doctors_simple"
+    allowed_domains = ["practo.com"]
+    
+    # Configuration
+    cities = CITIES
+    specialities = SPECIALITIES
+    
+    def start_requests(self):
+        """Generate initial requests for all city-speciality combinations"""
+        
+        for city in self.cities:
+            for speciality in self.specialities:
+                # Build the search URL for Practo
+                search_query = f'[{{"word":"{speciality}","autocompleted":true,"category":"subspeciality"}}]'
+                url = f"https://www.practo.com/search/doctors?results_type=doctor&q={search_query}&city={city}"
+                
+                yield scrapy.Request(
+                    url=url,
+                    meta={
+                        "city": city,
+                        "speciality": speciality,
+                    },
+                    callback=self.parse_doctors_listing,
+                    errback=self.handle_error,
+                )
+    
+    def parse_doctors_listing(self, response):
+        """Parse the doctors listing page and extract doctor profile URLs"""
+        
+        city = response.meta['city']
+        speciality = response.meta['speciality']
+        
+        # Extract doctor profile links using CSS selectors
+        doctor_links = response.css('div.u-border-general--bottom a[href*="/doctor/"]::attr(href)').getall()
+        
+        self.logger.info(f"Found {len(doctor_links)} doctors for {speciality} in {city}")
+        
+        for href in doctor_links:
+            if href:
+                profile_url = response.urljoin(href)
+                
+                yield scrapy.Request(
+                    url=profile_url,
+                    meta={
+                        "city": city,
+                        "speciality": speciality,
+                    },
+                    callback=self.parse_doctor_profile,
+                    errback=self.handle_error,
+                )
+                        
+    def parse_doctor_profile(self, response):
+        """Parse individual doctor profile page"""
+        city = response.meta['city']
+        speciality = response.meta['speciality']
+        
+        try:
+            item = DoctorItem()
+            
+            # Extract doctor information using CSS selectors
+            item['city'] = city
+            item['speciality'] = speciality
+            item['profile_url'] = response.url
+            
+            # Name
+            name = response.css('h1.c-profile__title::text').get()
+            if name:
+                item['name'] = name.strip()
+            
+            # Degree
+            degree = response.css('p.c-profile__details::text').get()
+            if degree:
+                item['degree'] = degree.strip()
+            
+            # Years of experience - try multiple selectors
+            experience_text = None
+            experience_selectors = [
+                'div.c-profile__details h2::text',
+                '.c-profile__details .years::text',
+                '*[class*="experience"]::text',
+                '*[class*="years"]::text',
+                '.profile-details .experience::text',
+                '.doctor-experience::text',
+            ]
+            
+            for selector in experience_selectors:
+                experience_texts = response.css(selector).getall()
+                for text in experience_texts:
+                    if text and ("years" in text.lower() or "experience" in text.lower()):
+                        if any(char.isdigit() for char in text):
+                            experience_text = text.strip()
+                            break
+                if experience_text:
+                    break
+            
+            item['year_of_experience'] = experience_text or ""
+            
+            # Location - try multiple selectors
+            location_text = None
+            location_selectors = [
+                'h4.c-profile--clinic__location::text',
+                '.c-profile--clinic__location::text',
+                '.clinic-location::text',
+                '.doctor-location::text',
+                '.profile-location::text',
+                '.practice-location::text',
+                '.hospital-address::text',
+                '.address-text::text',
+                '.clinic-address::text',
+            ]
+            
+            for selector in location_selectors:
+                location = response.css(selector).get()
+                if location and self.is_valid_location(location.strip()):
+                    location_text = location.strip()
+                    break
+            
+            item['location'] = location_text or ""
+            
+            # DP Score (rating)
+            dp_score = response.css('div.c-score__number::text').get()
+            if dp_score:
+                item['dp_score'] = dp_score.strip()
+            
+            # Number of patient votes  
+            npv = response.css('span.c-score__reviews-count::text').get()
+            if npv:
+                item['npv'] = npv.strip()
+            
+            # Consultation fee
+            fee_selectors = [
+                'span.c-price--strikethrough::text',
+                'span.fees-text::text',
+                '.consultation-fee::text',
+                '.fee-amount::text',
+                'div.u-f-right.u-large-font.u-bold.u-valign--middle.u-lheight-normal::text'
+            ]
+            
+            for selector in fee_selectors:
+                fee = response.css(selector).get()
+                if fee:
+                    item['consultation_fee'] = fee.strip()
+                    break
+            
+            # Google Map link extraction
+            google_map_link = None
+            
+            # Try to find map links in href attributes
+            map_links = response.css('a[href*="google.com/maps"]::attr(href)').getall()
+            map_links.extend(response.css('a[href*="maps.google"]::attr(href)').getall())
+            
+            if map_links:
+                google_map_link = map_links[0]
+            else:
+                # Try to find in img src attributes  
+                map_imgs = response.css('img[src*="google.com/maps"]::attr(src)').getall()
+                map_imgs.extend(response.css('img[src*="maps.google"]::attr(src)').getall())
+                
+                if map_imgs:
+                    google_map_link = map_imgs[0]
+            
+            # If no direct map link found, try to extract coordinates from page source
+            if not google_map_link:
+                page_text = response.text
+                import re
+                coord_patterns = [
+                    r'[\"\']?lat[\"\']?\s*[:=]\s*[\"\']*(-?\d+\.?\d*)[\"\']*.*?[\"\']?lng[\"\']?\s*[:=]\s*[\"\']*(-?\d+\.?\d*)[\"\']*',
+                    r'[\"\']?latitude[\"\']?\s*[:=]\s*[\"\']*(-?\d+\.?\d*)[\"\']*.*?[\"\']?longitude[\"\']?\s*[:=]\s*[\"\']*(-?\d+\.?\d*)[\"\']*',
+                    r'google\.maps.*?(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)',
+                    r'LatLng\(\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\)'
+                ]
+                
+                for pattern in coord_patterns:
+                    matches = re.finditer(pattern, page_text, re.IGNORECASE)
+                    for match in matches:
+                        try:
+                            lat, lng = float(match.group(1)), float(match.group(2))
+                            # Basic validation for Indian coordinates
+                            if 6 <= lat <= 37 and 68 <= lng <= 98:  # India bounds
+                                google_map_link = f"https://www.google.com/maps?q={lat},{lng}"
+                                break
+                        except (ValueError, IndexError):
+                            continue
+                    if google_map_link:
+                        break
+            
+            item['google_map_link'] = google_map_link or ""
+            
+            # Add timestamp
+            from datetime import datetime
+            item['scraped_at'] = datetime.now().isoformat()
+            
+            # Only yield if we have essential data
+            if item.get('name'):
+                yield item
+            else:
+                self.logger.warning(f"Skipping incomplete profile: {response.url}")
+                
+        except Exception as e:
+            self.logger.error(f"Error parsing doctor profile {response.url}: {str(e)}")
+    
+    def is_valid_location(self, text):
+        """Check if extracted text is a valid location and not HTML garbage"""
+        if not text or not text.strip():
+            return False
+        
+        text = text.strip()
+        
+        # Check for HTML tag patterns (common garbage)
+        html_patterns = [
+            r'^a,abbr,acronym,address,applet,article',  # Common garbage pattern
+            r'[a-z]+,[a-z]+,[a-z]+,[a-z]+',  # Multiple comma-separated lowercase words
+            r'^(a|abbr|acronym|address|applet|article|aside|audio|b|big|blockquote)$',  # Single HTML tags
+        ]
+        
+        for pattern in html_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return False
+        
+        # Check if it's suspiciously long (garbage data tends to be very long)
+        if len(text) > 200:
+            return False
+        
+        # Check if it contains mostly punctuation or special characters
+        if len([c for c in text if c.isalnum()]) < len(text) * 0.5:
+            return False
+        
+        return True
+        
+    def handle_error(self, failure):
+        """Handle request errors"""
+        self.logger.error(f"Request failed: {failure.request.url} - {failure.value}")
+        
+    def closed(self, reason):
+        """Called when spider is closed"""
+        self.logger.info(f"Spider closed: {reason}")

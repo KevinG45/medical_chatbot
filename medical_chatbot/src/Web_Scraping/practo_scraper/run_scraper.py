@@ -28,6 +28,11 @@ def run_spider(spider_name="practo_doctors_simple", item_limit=None):
     if item_limit:
         settings.set('CLOSESPIDER_ITEMCOUNT', item_limit)
     
+    # For the simple spider, disable Playwright handlers to avoid conflicts
+    if spider_name == "practo_doctors_simple":
+        settings.set('DOWNLOAD_HANDLERS', {})
+        print("Running simple spider - Playwright disabled")
+    
     # Create crawler process
     process = CrawlerProcess(settings)
     
@@ -70,10 +75,31 @@ def main():
         run_spider(spider_name, args.limit)
         print("Scraping completed!")
     except Exception as e:
+        error_msg = str(e).lower()
         print(f"Error during scraping: {e}")
-        if "playwright" in str(e).lower() and args.spider == 'enhanced':
-            print("\nTry running the simple spider instead:")
+        
+        if "playwright" in error_msg:
+            print("\n🔧 Playwright Error Detected!")
+            print("This could be due to:")
+            print("1. Playwright browsers not installed - run: python -m playwright install chromium")
+            print("2. Playwright package issues - try: pip install --upgrade scrapy-playwright")
+            print("3. Browser dependencies missing in environment")
+            print("\n💡 Try using the simple spider instead:")
             print("python run_scraper.py --spider simple")
+        elif "spider not found" in error_msg:
+            print(f"\n🕷️ Spider '{spider_name}' not found!")
+            print("Available spiders: simple, enhanced")
+            print("Use: python run_scraper.py --spider simple")
+        elif "module" in error_msg and "not found" in error_msg:
+            print(f"\n📦 Missing Dependencies!")
+            print("Install required packages with:")
+            print("pip install -r requirements.txt")
+        elif "connection" in error_msg or "network" in error_msg:
+            print(f"\n🌐 Network Error!")
+            print("Check internet connection and try again")
+        else:
+            print(f"\n❌ Unexpected error occurred")
+            print("Check the scrapy.log file for more details")
 
 if __name__ == "__main__":
     main()
