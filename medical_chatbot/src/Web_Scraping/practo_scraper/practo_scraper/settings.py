@@ -52,11 +52,11 @@ DOWNLOADER_MIDDLEWARES = {
     "practo_scraper.middlewares.PractoScraperDownloaderMiddleware": 543,
 }
 
-# Configure Playwright Download Handler (commented out for fallback)
-# DOWNLOAD_HANDLERS = {
-#     "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
-#     "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
-# }
+# Configure Playwright Download Handler
+DOWNLOAD_HANDLERS = {
+    "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+    "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+}
 
 # Configure Playwright
 PLAYWRIGHT_BROWSER_TYPE = "chromium"

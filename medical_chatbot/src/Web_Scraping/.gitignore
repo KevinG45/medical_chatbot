@@ -1,0 +1,32 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Scrapy files
+*.log
+httpcache/
+
+# Database files
+*.db
+*.sqlite
+
+# Output data files (keep only in data/ for intentional commits)
+*.csv
+!data/*.csv
+
+# Environment files
+.env
+.venv
+env/
+venv/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
