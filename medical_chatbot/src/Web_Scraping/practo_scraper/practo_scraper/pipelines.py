@@ -19,13 +19,44 @@ class ValidationPipeline:
         adapter = ItemAdapter(item)
         
         # Skip if name is missing (essential field)
-        if not adapter.get('name'):
-            raise DropItem(f"Missing name in {item}")
+        name = adapter.get('name', '').strip()
+        if not name:
+            raise DropItem(f"Missing or empty name in {item}")
+        
+        # Skip if name looks like garbage (too short or contains HTML)
+        if len(name) < 3 or any(tag in name.lower() for tag in ['<', '>', 'html', 'div', 'span']):
+            raise DropItem(f"Invalid name format: {name}")
             
-        # Skip if consultation fee is missing
-        if not adapter.get('consultation_fee'):
-            raise DropItem(f"Missing consultation fee in {item}")
+        # Skip if profile URL is missing or invalid
+        profile_url = adapter.get('profile_url', '')
+        if not profile_url or not profile_url.startswith('https://www.practo.com'):
+            raise DropItem(f"Missing or invalid profile URL: {profile_url}")
+        
+        # Skip if speciality is missing
+        speciality = adapter.get('speciality', '').strip()
+        if not speciality:
+            raise DropItem(f"Missing speciality for {name}")
             
+        # Validate consultation fee if present
+        consultation_fee = adapter.get('consultation_fee')
+        if consultation_fee is not None:
+            try:
+                fee_value = float(consultation_fee)
+                if fee_value < 0 or fee_value > 50000:  # Reasonable fee range
+                    spider.logger.warning(f"Unusual consultation fee for {name}: {fee_value}")
+            except (ValueError, TypeError):
+                spider.logger.warning(f"Invalid consultation fee format for {name}: {consultation_fee}")
+        
+        # Validate experience if present
+        experience = adapter.get('year_of_experience')
+        if experience is not None and experience != '':
+            try:
+                exp_value = float(experience)
+                if exp_value < 0 or exp_value > 60:  # Reasonable experience range
+                    spider.logger.warning(f"Unusual experience value for {name}: {exp_value}")
+            except (ValueError, TypeError):
+                spider.logger.warning(f"Invalid experience format for {name}: {experience}")
+        
         return item
 
 
@@ -113,22 +144,42 @@ class CleaningPipeline:
     def extract_experience_years(self, experience_text):
         """Extract number of years from experience text"""
         if not experience_text:
-            return 0
+            return None
         
-        # Look for patterns like "5 years", "10+ years", etc.
-        pattern = r'(\d+)(?:\+)?\s*(?:years?|yrs?)'
-        match = re.search(pattern, str(experience_text), re.IGNORECASE)
+        text = str(experience_text).strip()
+        if not text:
+            return None
         
-        if match:
-            return int(match.group(1))
+        # Try to extract year number - handle various formats
+        patterns = [
+            r'(\d+)\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)',  # "15 years of experience"
+            r'(?:experience|exp).*?(\d+)\s*(?:years?|yrs?)',  # "experience 15 years"
+            r'(\d+)\s*(?:years?|yrs?)',  # Just "15 years"
+            r'(\d{4})',  # Year format like "2009" - will convert to experience
+            r'(\d+)',  # Any number
+        ]
         
-        # Look for just numbers
-        pattern = r'(\d+)'
-        match = re.search(pattern, str(experience_text))
-        if match:
-            return int(match.group(1))
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                try:
+                    value = int(match.group(1))
+                    
+                    # If it looks like a year (e.g., 2009), convert to experience
+                    if value > 1980 and value <= 2024:
+                        current_year = datetime.now().year
+                        experience = current_year - value
+                        if 0 <= experience <= 50:  # Reasonable experience range
+                            return experience
+                    
+                    # Direct experience value
+                    elif 0 <= value <= 60:  # Reasonable experience range
+                        return value
+                        
+                except ValueError:
+                    continue
         
-        return 0
+        return None
     
     def clean_score(self, score_text):
         """Extract and clean rating score"""
@@ -188,8 +239,9 @@ class CleaningPipeline:
         # Check for HTML tag patterns (common garbage)
         html_patterns = [
             r'^a,abbr,acronym,address,applet,article',  # Common garbage pattern
-            r'[a-z]+,[a-z]+,[a-z]+,[a-z]+',  # Multiple comma-separated lowercase words
-            r'^(a|abbr|acronym|address|applet|article|aside|audio|b|big|blockquote)$',  # Single HTML tags
+            r'[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+',  # Multiple comma-separated lowercase words (5+)
+            r'^(a|abbr|acronym|address|applet|article|aside|audio|b|big|blockquote|body|canvas|caption|center|cite)$',  # Single HTML tags
+            r'a,abbr,acronym,address,applet,article,aside,audio,b,big,blockquote,body,canvas,caption,center,cite',  # HTML tag sequence
         ]
         
         for pattern in html_patterns:
@@ -201,11 +253,15 @@ class CleaningPipeline:
             return False
             
         # Check if it contains too many commas (likely tag list)
-        if location.count(',') > 5:
+        if location.count(',') > 8:  # Increased threshold as some addresses might have multiple commas
             return False
         
         # Check if it looks like HTML tags
         if '<' in location or '>' in location:
+            return False
+        
+        # Check if it's all lowercase letters and commas (typical HTML tag pattern)
+        if re.match(r'^[a-z,\s]+$', location) and ',' in location and len(location.split(',')) > 4:
             return False
         
         return True
@@ -265,6 +321,49 @@ class CsvExportPipeline:
 from scrapy.exceptions import DropItem
 import sqlite3
 import os
+import hashlib
+
+
+class DuplicateFilterPipeline:
+    """Pipeline to filter duplicate items based on profile URL and doctor details"""
+    
+    def __init__(self):
+        self.seen_urls = set()
+        self.seen_doctors = set()  # For doctor name + location combinations
+        
+    def process_item(self, item, spider):
+        adapter = ItemAdapter(item)
+        
+        # Get profile URL and normalize it
+        profile_url = adapter.get('profile_url', '')
+        if profile_url:
+            # Normalize URL by removing query parameters that don't affect identity
+            base_url = profile_url.split('?')[0] if '?' in profile_url else profile_url
+            base_url = base_url.replace('/recommended', '')  # Remove /recommended suffix
+            
+            if base_url in self.seen_urls:
+                spider.logger.debug(f"Duplicate URL found: {base_url}")
+                raise DropItem(f"Duplicate URL: {base_url}")
+            
+            self.seen_urls.add(base_url)
+        
+        # Create a unique identifier for doctor based on name and location
+        name = adapter.get('name', '').strip()
+        location = adapter.get('location', '').strip()
+        city = adapter.get('city', '').strip()
+        
+        if name:
+            # Create a normalized doctor identifier
+            doctor_key = f"{name.lower()}|{location.lower()}|{city.lower()}"
+            doctor_hash = hashlib.md5(doctor_key.encode()).hexdigest()[:8]
+            
+            if doctor_hash in self.seen_doctors:
+                spider.logger.debug(f"Duplicate doctor found: {name} in {location or city}")
+                raise DropItem(f"Duplicate doctor: {name} in {location or city}")
+            
+            self.seen_doctors.add(doctor_hash)
+        
+        return item
 
 
 class DatabasePipeline:
