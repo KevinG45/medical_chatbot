@@ -1,0 +1,16 @@
+# Core dependencies for web scraping
+scrapy>=2.11.0
+scrapy-playwright>=0.0.25
+playwright>=1.40.0
+
+# Data processing and storage
+pandas>=2.0.0
+# sqlite3 is built into Python
+
+# Additional utilities
+python-dotenv>=1.0.0
+lxml>=4.9.0
+requests>=2.31.0
+
+# For production database (optional)
+# psycopg2-binary>=2.9.0  # Uncomment for PostgreSQL support
