@@ -145,8 +145,16 @@ class DataConsolidator:
         location = str(location).strip().lower() if location else ''
         city = str(city).strip().lower() if city else ''
         
-        # Create a normalized doctor identifier
-        doctor_key = f"{name}|{location}|{city}"
+        # Normalize doctor name (remove titles, extra spaces)
+        name = re.sub(r'^dr\.?\s*', '', name)  # Remove "Dr." prefix
+        name = re.sub(r'\s+', ' ', name).strip()  # Normalize spaces
+        
+        # For location, if it's empty, just use city
+        if not location or location == 'nan':
+            location = city
+        
+        # Create a normalized doctor identifier - be more aggressive with similarity
+        doctor_key = f"{name}|{city}"  # Use just name + city for better deduplication
         return hashlib.md5(doctor_key.encode()).hexdigest()[:12]
     
     def load_and_clean_csv(self, filepath, filename):
