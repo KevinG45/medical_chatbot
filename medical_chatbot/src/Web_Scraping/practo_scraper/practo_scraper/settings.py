@@ -52,11 +52,12 @@ DOWNLOADER_MIDDLEWARES = {
     "practo_scraper.middlewares.PractoScraperDownloaderMiddleware": 543,
 }
 
-# Configure Playwright Download Handler (commented out for fallback)
-# DOWNLOAD_HANDLERS = {
-#     "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
-#     "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
-# }
+# Configure Playwright Download Handler (enabled when Playwright is available)
+# Uncomment the following lines when using the enhanced spider with Playwright
+DOWNLOAD_HANDLERS = {
+    "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+    "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+}
 
 # Configure Playwright
 PLAYWRIGHT_BROWSER_TYPE = "chromium"
