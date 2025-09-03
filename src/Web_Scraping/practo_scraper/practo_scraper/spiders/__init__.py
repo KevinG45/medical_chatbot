@@ -1,0 +1,1 @@
+# Scrapy spider initialization
