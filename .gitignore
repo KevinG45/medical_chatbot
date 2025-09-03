@@ -51,3 +51,12 @@ Thumbs.db
 # Temporary files
 /tmp/
 temp/
+
+# Custom data and output files
+data/
+*.csv
+*.json
+*.sqlite
+
+# Test files  
+test_asyncio_fix.py
