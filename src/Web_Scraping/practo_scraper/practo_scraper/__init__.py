@@ -1,0 +1,1 @@
+# Scrapy settings for practo_scraper project
